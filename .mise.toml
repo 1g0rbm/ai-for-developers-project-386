@@ -1,0 +1,6 @@
+[tools]
+node = "22"
+
+[tasks]
+"spec:install" = { dir = "spec", run = "npm ci" }
+"spec:build" = { dir = "spec", run = "npm run build" }

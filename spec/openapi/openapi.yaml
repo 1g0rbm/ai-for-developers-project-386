@@ -1,0 +1,698 @@
+openapi: 3.0.0
+info:
+  title: Calendar Booking API
+  description: |-
+    Календарь бронирований без регистрации гостей.
+
+    ## Инварианты
+    - В системе ровно один пользователь с ролью Owner; ресурс `GET /api/owner` возвращает единственного владельца календаря.
+    - Все моменты времени в API — UTC (ISO 8601, `date-time`).
+    - Два бронирования не могут пересекаться по времени, даже если типы событий разные.
+    - `POST /api/event-types` с уже существующим `id` возвращает 409 Conflict.
+    - `POST /api/bookings` при пересечении интервала `[start, start + duration)` с любым существующим бронированием — 409 Conflict.
+    - `GET /api/availability` возвращает только такие моменты начала слота, для которых интервал слота не пересекается ни с одним существующим бронированием (глобально).
+
+    Аутентификация в API не используется.
+  version: 1.0.0
+tags: []
+paths:
+  /api/availability:
+    get:
+      operationId: getAvailability
+      description: |-
+        Свободные моменты начала слотов для выбранного типа на [from, to).
+        Длительность слота = durationMinutes типа. Учитываются все бронирования календаря.
+      parameters:
+        - name: eventTypeId
+          in: query
+          required: true
+          schema:
+            type: string
+          explode: false
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          explode: false
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          explode: false
+        - name: slotStepMinutes
+          in: query
+          required: false
+          description: Шаг сетки в минутах; если не указан — значение по умолчанию на сервере (отражается в ответе).
+          schema:
+            type: integer
+            format: int32
+          explode: false
+      responses:
+        '200':
+          description: Ответ 200 OK с JSON-телом.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilityResponse'
+        '400':
+          description: 400 — неверные параметры или тело запроса.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '404':
+          description: 404 — ресурс не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 409 — конфликт (дубль id типа, пересечение брони и т.п.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: 422 — семантически неверный запрос (например слот вне сетки или в прошлом).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnprocessableEntityError'
+        '500':
+          description: 500 — внутренняя ошибка сервера.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+  /api/bookings:
+    get:
+      operationId: listBookings
+      description: |-
+        Предстоящие бронирования всех типов в одном списке.
+        Если `from` не передан, сервер использует текущий момент (UTC).
+        Сортировка по `start` по возрастанию.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Нижняя граница (UTC). По умолчанию — «сейчас» на сервере.
+          schema:
+            type: string
+            format: date-time
+          explode: false
+        - name: to
+          in: query
+          required: false
+          description: Верхняя граница (UTC), опционально.
+          schema:
+            type: string
+            format: date-time
+          explode: false
+      responses:
+        '200':
+          description: Ответ 200 OK с JSON-телом.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BookingListItem'
+        '400':
+          description: 400 — неверные параметры или тело запроса.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '404':
+          description: 404 — ресурс не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 409 — конфликт (дубль id типа, пересечение брони и т.п.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: 422 — семантически неверный запрос (например слот вне сетки или в прошлом).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnprocessableEntityError'
+        '500':
+          description: 500 — внутренняя ошибка сервера.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+    post:
+      operationId: createBooking
+      description: Создание брони; пересечение с любой существующей записью — 409.
+      parameters: []
+      responses:
+        '201':
+          description: Ответ 201 Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '400':
+          description: 400 — неверные параметры или тело запроса.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '404':
+          description: 404 — ресурс не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 409 — конфликт (дубль id типа, пересечение брони и т.п.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: 422 — семантически неверный запрос (например слот вне сетки или в прошлом).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnprocessableEntityError'
+        '500':
+          description: 500 — внутренняя ошибка сервера.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingRequest'
+  /api/event-types:
+    get:
+      operationId: listEventTypes
+      description: Список типов событий (для владельца и для страницы гостя).
+      parameters: []
+      responses:
+        '200':
+          description: Ответ 200 OK с JSON-телом.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EventType'
+        '400':
+          description: 400 — неверные параметры или тело запроса.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '404':
+          description: 404 — ресурс не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 409 — конфликт (дубль id типа, пересечение брони и т.п.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: 422 — семантически неверный запрос (например слот вне сетки или в прошлом).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnprocessableEntityError'
+        '500':
+          description: 500 — внутренняя ошибка сервера.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+    post:
+      operationId: createEventType
+      description: Создание типа события. Клиент задаёт `id`; при дубле — 409.
+      parameters: []
+      responses:
+        '201':
+          description: Ответ 201 Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventType'
+        '400':
+          description: 400 — неверные параметры или тело запроса.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '404':
+          description: 404 — ресурс не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 409 — конфликт (дубль id типа, пересечение брони и т.п.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: 422 — семантически неверный запрос (например слот вне сетки или в прошлом).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnprocessableEntityError'
+        '500':
+          description: 500 — внутренняя ошибка сервера.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEventTypeRequest'
+  /api/event-types/{id}:
+    get:
+      operationId: getEventType
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ответ 200 OK с JSON-телом.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventType'
+        '400':
+          description: 400 — неверные параметры или тело запроса.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '404':
+          description: 404 — ресурс не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 409 — конфликт (дубль id типа, пересечение брони и т.п.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: 422 — семантически неверный запрос (например слот вне сетки или в прошлом).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnprocessableEntityError'
+        '500':
+          description: 500 — внутренняя ошибка сервера.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+    put:
+      operationId: replaceEventType
+      description: Полная замена полей типа (id только в пути).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ответ 200 OK с JSON-телом.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventType'
+        '400':
+          description: 400 — неверные параметры или тело запроса.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '404':
+          description: 404 — ресурс не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 409 — конфликт (дубль id типа, пересечение брони и т.п.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: 422 — семантически неверный запрос (например слот вне сетки или в прошлом).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnprocessableEntityError'
+        '500':
+          description: 500 — внутренняя ошибка сервера.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplaceEventTypeRequest'
+    delete:
+      operationId: deleteEventType
+      description: Удаление типа; при невозможности (например есть брони) — 409.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Ответ 204 No Content (без тела).
+        '400':
+          description: 400 — неверные параметры или тело запроса.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '404':
+          description: 404 — ресурс не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 409 — конфликт (дубль id типа, пересечение брони и т.п.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: 422 — семантически неверный запрос (например слот вне сетки или в прошлом).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnprocessableEntityError'
+        '500':
+          description: 500 — внутренняя ошибка сервера.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+  /api/owner:
+    get:
+      operationId: getOwner
+      description: Возвращает единственного владельца календаря (синглтон).
+      parameters: []
+      responses:
+        '200':
+          description: Ответ 200 OK с JSON-телом.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+        '400':
+          description: 400 — неверные параметры или тело запроса.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BadRequestError'
+        '404':
+          description: 404 — ресурс не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotFoundError'
+        '409':
+          description: 409 — конфликт (дубль id типа, пересечение брони и т.п.).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictError'
+        '422':
+          description: 422 — семантически неверный запрос (например слот вне сетки или в прошлом).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnprocessableEntityError'
+        '500':
+          description: 500 — внутренняя ошибка сервера.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+components:
+  schemas:
+    ApiError:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: integer
+          format: int32
+          description: Прикладной или HTTP-ориентированный код.
+        message:
+          type: string
+          description: Человекочитаемое описание.
+      description: Тело ошибки API.
+    AvailabilityResponse:
+      type: object
+      required:
+        - slotStepMinutes
+        - availableStarts
+      properties:
+        slotStepMinutes:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Шаг сетки слотов в минутах (например 15). Должен совпадать с query или значением по умолчанию.
+        availableStarts:
+          type: array
+          items:
+            type: string
+            format: date-time
+          description: Допустимые моменты начала слота в UTC; каждый слот занимает duration выбранного типа.
+      description: 'Свободные слоты: моменты начала + параметр сетки, согласованный с сервером.'
+    BadRequestError:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+      description: 400 — неверные параметры или тело запроса.
+    Booking:
+      type: object
+      required:
+        - id
+        - eventTypeId
+        - start
+        - guestName
+        - guestEmail
+      properties:
+        id:
+          type: string
+        eventTypeId:
+          type: string
+        start:
+          type: string
+          format: date-time
+          description: Начало в UTC (ISO 8601).
+        guestName:
+          type: string
+        guestEmail:
+          type: string
+      description: Бронирование.
+    BookingListItem:
+      type: object
+      required:
+        - id
+        - eventTypeId
+        - start
+        - guestName
+        - guestEmail
+        - eventType
+      properties:
+        id:
+          type: string
+        eventTypeId:
+          type: string
+        start:
+          type: string
+          format: date-time
+        guestName:
+          type: string
+        guestEmail:
+          type: string
+        eventType:
+          $ref: '#/components/schemas/EventTypeSummary'
+      description: Элемент списка предстоящих бронирований с вложенным типом события.
+    CalendarApiVersions:
+      type: string
+      enum:
+        - 1.0.0
+      description: Версии публичного HTTP API.
+    ConflictError:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+      description: 409 — конфликт (дубль id типа, пересечение брони и т.п.).
+    CreateBookingRequest:
+      type: object
+      required:
+        - eventTypeId
+        - start
+        - guestName
+        - guestEmail
+      properties:
+        eventTypeId:
+          type: string
+        start:
+          type: string
+          format: date-time
+        guestName:
+          type: string
+        guestEmail:
+          type: string
+      description: Создание бронирования гостем.
+    CreateEventTypeRequest:
+      type: object
+      required:
+        - id
+        - name
+        - description
+        - durationMinutes
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        durationMinutes:
+          type: integer
+          format: int32
+          minimum: 1
+      description: Тело создания типа события (все поля ресурса, включая id).
+    EventType:
+      type: object
+      required:
+        - id
+        - name
+        - description
+        - durationMinutes
+      properties:
+        id:
+          type: string
+          description: Уникальный id; задаётся клиентом при создании (URL-safe строка).
+        name:
+          type: string
+        description:
+          type: string
+        durationMinutes:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Длительность встречи в минутах (> 0 на стороне сервера).
+      description: 'Тип события: публичное представление и ресурс CRUD.'
+    EventTypeSummary:
+      type: object
+      required:
+        - id
+        - name
+        - durationMinutes
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        durationMinutes:
+          type: integer
+          format: int32
+          minimum: 1
+      description: Краткие данные типа в списке бронирований.
+    InternalServerError:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+      description: 500 — внутренняя ошибка сервера.
+    NotFoundError:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+      description: 404 — ресурс не найден.
+    OwnerRole:
+      type: string
+      enum:
+        - Owner
+      description: Роль владельца календаря.
+    Profile:
+      type: object
+      required:
+        - id
+        - displayName
+        - email
+        - role
+      properties:
+        id:
+          type: string
+          description: Стабильный идентификатор профиля.
+        displayName:
+          type: string
+          description: Отображаемое имя.
+        email:
+          type: string
+          description: Контактный email.
+        role:
+          $ref: '#/components/schemas/OwnerRole'
+      description: Профиль владельца календаря (сейчас синглтон; схему можно расширять при эволюции API).
+    ReplaceEventTypeRequest:
+      type: object
+      required:
+        - name
+        - description
+        - durationMinutes
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        durationMinutes:
+          type: integer
+          format: int32
+          minimum: 1
+      description: Тело полной замены типа события (PUT); id только в пути.
+    UnprocessableEntityError:
+      type: object
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+      description: 422 — семантически неверный запрос (например слот вне сетки или в прошлом).
