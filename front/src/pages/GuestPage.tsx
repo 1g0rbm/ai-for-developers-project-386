@@ -140,7 +140,13 @@ export function GuestPage() {
             disabled={loadingTypes}
             searchable
           />
-          <DatePickerInput type="range" label="Период дат (включительно)" value={range} onChange={setRange} />
+          <DatePickerInput
+            type="range"
+            label="Период дат (включительно)"
+            value={range}
+            onChange={setRange}
+            data-testid="guest-date-range"
+          />
           <NumberInput
             label="Шаг сетки (мин), опционально"
             description="Если не задан — значение по умолчанию на сервере"

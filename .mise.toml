@@ -11,4 +11,12 @@ python = "3.12"
 "prism:mock" = { run = "npx --yes @stoplight/prism-cli mock spec/openapi/openapi.yaml -p 4010" }
 "back:install" = { dir = "back", run = "python -m pip install -r requirements.txt" }
 "back:dev" = { dir = "back", run = "python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000" }
+"back:serve" = { dir = "back", run = "python -m uvicorn app.main:app --host 127.0.0.1 --port 8000" }
+"e2e:install" = { dir = "e2e", run = "npm ci" }
+# На Linux/WSL нужны системные .so (например libasound); без --with-deps Chromium падает при launch.
+"e2e:browsers" = { dir = "e2e", run = "npx playwright install --with-deps chromium" }
+"e2e:serve" = { run = "bash e2e/start-stack.sh" }
+# Зависимости mise выполняются параллельно — сборка фронта должна идти после npm ci, поэтому одна последовательная цепочка.
+"e2e:test" = { run = "bash -c 'set -euo pipefail; mise run back:install && mise run front:install && mise run front:build && mise run e2e:install && cd e2e && exec npx playwright test'" }
+"e2e:ci" = { run = "bash -c 'set -euo pipefail; mise run e2e:browsers; export CI=true; mise run e2e:test'" }
 "dev" = { run = "bash -c 'mise run back:dev & b=$!; mise run front:dev & f=$!; trap \"kill $b $f 2>/dev/null\" INT TERM EXIT; wait $b $f'" }
