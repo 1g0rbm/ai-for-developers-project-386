@@ -4,3 +4,7 @@ node = "22"
 [tasks]
 "spec:install" = { dir = "spec", run = "npm ci" }
 "spec:build" = { dir = "spec", run = "npm run build" }
+"front:install" = { dir = "front", run = "npm ci" }
+"front:dev" = { dir = "front", run = "npm run dev" }
+"front:build" = { dir = "front", run = "npm run build" }
+"prism:mock" = { run = "npx --yes @stoplight/prism-cli mock spec/openapi/openapi.yaml -p 4010" }
