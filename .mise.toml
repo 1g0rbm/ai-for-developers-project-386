@@ -1,5 +1,6 @@
 [tools]
 node = "22"
+python = "3.12"
 
 [tasks]
 "spec:install" = { dir = "spec", run = "npm ci" }
@@ -8,3 +9,6 @@ node = "22"
 "front:dev" = { dir = "front", run = "npm run dev" }
 "front:build" = { dir = "front", run = "npm run build" }
 "prism:mock" = { run = "npx --yes @stoplight/prism-cli mock spec/openapi/openapi.yaml -p 4010" }
+"back:install" = { dir = "back", run = "python -m pip install -r requirements.txt" }
+"back:dev" = { dir = "back", run = "python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000" }
+"dev" = { run = "bash -c 'mise run back:dev & b=$!; mise run front:dev & f=$!; trap \"kill $b $f 2>/dev/null\" INT TERM EXIT; wait $b $f'" }
