@@ -1,0 +1,16 @@
+.git
+.github
+**/.pytest_cache
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+.env
+.env.*
+!.env.example
+
+e2e/node_modules
+front/node_modules
+spec/node_modules
+back/.venv
+
+.cursor

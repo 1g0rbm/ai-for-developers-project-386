@@ -64,3 +64,32 @@ mise run dev
 - Как в CI: `mise run e2e:ci`.
 
 Сценарии: [`e2e/SCENARIOS.md`](e2e/SCENARIOS.md). Полный список задач — [`.mise.toml`](.mise.toml).
+
+## Docker и деплой
+
+Образ собирается из корня репозитория ([`Dockerfile`](Dockerfile)): многостадийная сборка фронта (Node 22) и бэкенда (Python 3.12), в контейнере один процесс Uvicorn отдаёт API и статику SPA. Порт задаётся переменной **`PORT`** (как на Render и в проверках).
+
+Нужен установленный [Docker](https://docs.docker.com/get-docker/). Из корня репозитория:
+
+| Задача | Назначение |
+|--------|------------|
+| `mise run docker:build` | Собрать образ `calendar-booking` |
+| `mise run docker:run` | Запустить уже собранный образ (foreground, остановка: Ctrl+C) |
+| `mise run docker:up` | Сборка и запуск подряд |
+
+По умолчанию контейнер слушает **8080** на хосте. Другой порт: `DOCKER_PORT=3000 mise run docker:run` (тот же порт прокидывается в `PORT` внутри контейнера).
+
+Откройте в браузере `http://localhost:8080` (или `http://localhost:$DOCKER_PORT`) — UI и запросы к `/api/...` идут на один хост.
+
+Эквивалент без mise:
+
+```bash
+docker build -t calendar-booking .
+docker run --rm -p 8080:8080 -e PORT=8080 calendar-booking
+```
+
+### Публичное приложение
+
+После деплоя (например на [Render](https://render.com) как Web Service из Dockerfile) подставьте сюда URL:
+
+**—**

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -378,3 +379,15 @@ def get_availability(
         t = add_minutes(t, step)
 
     return AvailabilityResponse(slotStepMinutes=step, availableStarts=available)
+
+
+# В продакшене (Docker) собранный фронт кладётся в STATIC_ROOT; один процесс отдаёт и /api, и SPA.
+_static_root = os.environ.get("STATIC_ROOT")
+if _static_root:
+    from starlette.staticfiles import StaticFiles
+
+    app.mount(
+        "/",
+        StaticFiles(directory=_static_root, html=True),
+        name="static",
+    )

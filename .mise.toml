@@ -20,3 +20,7 @@ python = "3.12"
 "e2e:test" = { run = "bash -c 'set -euo pipefail; mise run back:install && mise run front:install && mise run front:build && mise run e2e:install && cd e2e && exec npx playwright test'" }
 "e2e:ci" = { run = "bash -c 'set -euo pipefail; mise run e2e:browsers; export CI=true; mise run e2e:test'" }
 "dev" = { run = "bash -c 'mise run back:dev & b=$!; mise run front:dev & f=$!; trap \"kill $b $f 2>/dev/null\" INT TERM EXIT; wait $b $f'" }
+# Локальный запуск как в проде: образ из Dockerfile, UI+API на одном порту (по умолчанию 8080, переопределение: DOCKER_PORT=3000).
+"docker:build" = { run = "docker build -t calendar-booking ." }
+"docker:run" = { run = "bash -c 'set -euo pipefail; P=\"${DOCKER_PORT:-8080}\"; exec docker run --rm -p \"$P:$P\" -e PORT=\"$P\" calendar-booking'" }
+"docker:up" = { run = "bash -c 'set -euo pipefail; mise run docker:build && mise run docker:run'" }
