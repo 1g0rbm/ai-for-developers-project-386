@@ -90,6 +90,6 @@ docker run --rm -p 8080:8080 -e PORT=8080 calendar-booking
 
 ### Публичное приложение
 
-После деплоя (например на [Render](https://render.com) как Web Service из Dockerfile) подставьте сюда URL:
+Развёрнуто на [Render](https://render.com) (Web Service из [`Dockerfile`](Dockerfile)):
 
-**—**
+**https://ai-for-developers-project-386-j6hb.onrender.com**
