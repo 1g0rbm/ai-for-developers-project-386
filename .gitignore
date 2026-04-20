@@ -48,10 +48,10 @@ out/
 *.pem
 
 # IDE
-.idea/
-.vscode/
-.cursor/
-.codex/
+.idea
+.vscode
+.cursor
+.codex
 *.swp
 *.swo
 *~

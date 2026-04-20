@@ -1,0 +1,112 @@
+name: cursor-triage
+
+on:
+  issues:
+    types: [opened]
+
+concurrency:
+  group: cursor-triage-${{ github.event.issue.id }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    if: github.event.issue.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Check account age
+        id: check
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const user = await github.rest.users.getByUsername({
+              username: context.payload.issue.user.login,
+            });
+
+            const created = new Date(user.data.created_at);
+            const days = (Date.now() - created.getTime()) / (1000 * 60 * 60 * 24);
+            core.setOutput("allowed", String(days >= 30));
+
+      - name: Checkout repository
+        if: steps.check.outputs.allowed == 'true'
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install Cursor Agent
+        if: steps.check.outputs.allowed == 'true'
+        run: curl https://cursor.com/install -fsS | bash
+
+      - name: Run Cursor triage
+        id: cursor
+        if: steps.check.outputs.allowed == 'true'
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+
+          prompt_file="$(mktemp)"
+          cat >"$prompt_file" <<EOF
+          Ты работаешь внутри GitHub Actions в репозитории $REPOSITORY.
+          Режим: issue triage.
+
+          Новая issue:
+          - номер: $ISSUE_NUMBER
+          - заголовок: $ISSUE_TITLE
+          - автор: @$ISSUE_AUTHOR
+          - ссылка: $ISSUE_URL
+
+          Описание issue:
+          $ISSUE_BODY
+
+          Проанализируй issue.
+
+          Если есть очевидное следующее действие, дай полезный комментарий в одном из форматов:
+          - кратко объясни проблему и предложи следующие шаги;
+          - укажи релевантную документацию или файлы проекта, если они действительно относятся к issue;
+          - если по описанию уже виден простой и безопасный путь исправления, кратко опиши его.
+
+          Если данных недостаточно, issue расплывчатая или полезного комментария не получается, ответь ровно:
+          NO_COMMENT
+
+          Правила:
+          - отвечай по-русски;
+          - будь конкретным и кратким;
+          - не делай обзор всего репозитория без необходимости;
+          - не придумывай детали, которых нет в issue или коде;
+          - если отвечаешь комментарием, не используй префиксы вроде "Вот разбор".
+          EOF
+
+          cursor-agent --force --print --output-format text "$(cat "$prompt_file")" | tee cursor-triage-output.txt
+
+      - name: Post triage comment
+        if: steps.check.outputs.allowed == 'true' && steps.cursor.outcome == 'success'
+        uses: actions/github-script@v8
+        env:
+          CURSOR_OUTPUT_FILE: cursor-triage-output.txt
+        with:
+          script: |
+            const fs = require("fs");
+            const path = process.env.CURSOR_OUTPUT_FILE;
+            if (!fs.existsSync(path)) return;
+
+            const body = fs.readFileSync(path, "utf8").trim();
+            if (!body || body === "NO_COMMENT") return;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: body.length > 60000 ? `${body.slice(0, 60000)}\n\n[output truncated]` : body,
+            });
