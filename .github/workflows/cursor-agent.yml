@@ -1,0 +1,275 @@
+name: cursor-agent
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  cursor-agent:
+    if: |
+      contains(github.event.comment.body, ' /cursor') ||
+      startsWith(github.event.comment.body, '/cursor') ||
+      contains(github.event.comment.body, ' /oc') ||
+      startsWith(github.event.comment.body, '/oc')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Resolve GitHub context
+        id: context
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const isIssueComment = context.eventName === "issue_comment";
+            const isReviewComment = context.eventName === "pull_request_review_comment";
+
+            let issueNumber = context.payload.issue?.number ?? null;
+            let issueTitle = context.payload.issue?.title ?? "";
+            let pr = null;
+
+            if (isReviewComment) {
+              pr = context.payload.pull_request;
+              issueNumber = pr.number;
+              issueTitle = pr.title;
+            }
+
+            if (isIssueComment && context.payload.issue?.pull_request) {
+              const pull = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.issue.number,
+              });
+              pr = pull.data;
+              issueTitle = pr.title;
+            }
+
+            const isPullRequest = Boolean(pr);
+            const headRepo = isPullRequest ? pr.head.repo.full_name : context.repo.owner + "/" + context.repo.repo;
+            const headRef = isPullRequest ? pr.head.ref : context.payload.repository.default_branch;
+            const baseRef = isPullRequest ? pr.base.ref : context.payload.repository.default_branch;
+            const sameRepo = headRepo === `${context.repo.owner}/${context.repo.repo}`;
+            const canPushToHead = isPullRequest && sameRepo;
+            const checkoutRef = canPushToHead ? headRef : baseRef;
+            const commentBody = context.payload.comment.body;
+            const commandText = commentBody.replace(/(?:^|\s)\/(?:cursor|oc)\b/g, " ").trim();
+
+            core.setOutput("is_pull_request", String(isPullRequest));
+            core.setOutput("issue_number", String(issueNumber ?? ""));
+            core.setOutput("issue_title", issueTitle);
+            core.setOutput("pr_number", isPullRequest ? String(pr.number) : "");
+            core.setOutput("pr_title", isPullRequest ? pr.title : "");
+            core.setOutput("head_repo", headRepo);
+            core.setOutput("head_ref", headRef);
+            core.setOutput("base_ref", baseRef);
+            core.setOutput("same_repo", String(sameRepo));
+            core.setOutput("can_push_to_head", String(canPushToHead));
+            core.setOutput("checkout_ref", checkoutRef);
+            core.setOutput("comment_body", commentBody);
+            core.setOutput("command_text", commandText);
+            core.setOutput("comment_author", context.payload.comment.user.login);
+            core.setOutput("comment_url", context.payload.comment.html_url);
+            core.setOutput("review_path", context.payload.comment.path || "");
+            core.setOutput("review_line", context.payload.comment.line ? String(context.payload.comment.line) : "");
+            core.setOutput("review_start_line", context.payload.comment.start_line ? String(context.payload.comment.start_line) : "");
+            core.setOutput("review_side", context.payload.comment.side || "");
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ steps.context.outputs.checkout_ref }}
+
+      - name: Install Cursor Agent
+        run: curl https://cursor.com/install -fsS | bash
+
+      - name: Run Cursor Agent
+        id: cursor
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          COMMENT_BODY: ${{ steps.context.outputs.comment_body }}
+          COMMAND_TEXT: ${{ steps.context.outputs.command_text }}
+          COMMENT_AUTHOR: ${{ steps.context.outputs.comment_author }}
+          COMMENT_URL: ${{ steps.context.outputs.comment_url }}
+          ISSUE_NUMBER: ${{ steps.context.outputs.issue_number }}
+          ISSUE_TITLE: ${{ steps.context.outputs.issue_title }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          PR_TITLE: ${{ steps.context.outputs.pr_title }}
+          IS_PULL_REQUEST: ${{ steps.context.outputs.is_pull_request }}
+          REVIEW_PATH: ${{ steps.context.outputs.review_path }}
+          REVIEW_LINE: ${{ steps.context.outputs.review_line }}
+          REVIEW_START_LINE: ${{ steps.context.outputs.review_start_line }}
+          REVIEW_SIDE: ${{ steps.context.outputs.review_side }}
+          REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+
+          prompt_file="$(mktemp)"
+          cat >"$prompt_file" <<EOF
+          Ты работаешь внутри GitHub Actions в репозитории $REPOSITORY.
+          Событие: $EVENT_NAME.
+          Автор комментария: @$COMMENT_AUTHOR.
+          Ссылка на комментарий: $COMMENT_URL.
+
+          Контекст:
+          - is_pull_request: $IS_PULL_REQUEST
+          - issue_number: $ISSUE_NUMBER
+          - issue_title: $ISSUE_TITLE
+          - pr_number: $PR_NUMBER
+          - pr_title: $PR_TITLE
+          - review_path: $REVIEW_PATH
+          - review_line: $REVIEW_LINE
+          - review_start_line: $REVIEW_START_LINE
+          - review_side: $REVIEW_SIDE
+
+          Исходный комментарий пользователя:
+          $COMMENT_BODY
+
+          Команда без триггера:
+          $COMMAND_TEXT
+
+          Выполни запрос пользователя по репозиторию.
+
+          Если для выполнения нужны изменения в коде:
+          - вноси изменения прямо в рабочую директорию;
+          - оставляй файлы сохраненными на диске;
+          - не ограничивайся только текстовым ответом.
+
+          Правила:
+          - отвечай по-русски;
+          - будь конкретным и кратким;
+          - в конце отдельно перечисли измененные файлы, если они есть;
+          - если данных недостаточно, прямо напиши об этом;
+          - не проси пользователя запускать команды локально;
+          - не спрашивай подтверждений, ты работаешь в CI.
+          EOF
+
+          cursor-agent --force --print --output-format text "$(cat "$prompt_file")" | tee cursor-output.txt
+
+      - name: Detect changes
+        id: diff
+        if: success()
+        run: |
+          set -euo pipefail
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure git
+        if: steps.diff.outputs.has_changes == 'true'
+        run: |
+          git config user.name "cursor-agent[bot]"
+          git config user.email "cursor-agent[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Commit and push to PR branch
+        id: push_pr
+        if: steps.diff.outputs.has_changes == 'true' && steps.context.outputs.can_push_to_head == 'true'
+        run: |
+          set -euo pipefail
+          git add -A
+          git commit -m "cursor-agent: apply requested changes"
+          git push origin "HEAD:${TARGET_BRANCH}"
+          echo "branch_name=${TARGET_BRANCH}" >> "$GITHUB_OUTPUT"
+        env:
+          TARGET_BRANCH: ${{ steps.context.outputs.head_ref }}
+
+      - name: Create branch and PR
+        id: create_pr
+        if: steps.diff.outputs.has_changes == 'true' && steps.context.outputs.can_push_to_head != 'true'
+        run: |
+          set -euo pipefail
+          branch="cursor-agent/${RUN_ID}-${RUN_ATTEMPT}"
+          git checkout -b "$branch"
+          git add -A
+          git commit -m "cursor-agent: apply requested changes"
+          git push origin "$branch"
+
+          if [ "${IS_PULL_REQUEST}" = "true" ]; then
+            title="Cursor Agent changes for PR #${PR_NUMBER}"
+            body=$'Автоматические изменения от Cursor Agent.\n\nИсходный контекст: PR #'${PR_NUMBER}$'.'
+          else
+            title="Cursor Agent changes for issue #${ISSUE_NUMBER}"
+            body=$'Автоматические изменения от Cursor Agent.\n\nCloses #'${ISSUE_NUMBER}$'.'
+          fi
+
+          pr_url="$(gh pr create \
+            --base "${BASE_REF}" \
+            --head "$branch" \
+            --title "$title" \
+            --body "$body")"
+
+          echo "branch_name=$branch" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          IS_PULL_REQUEST: ${{ steps.context.outputs.is_pull_request }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          ISSUE_NUMBER: ${{ steps.context.outputs.issue_number }}
+          BASE_REF: ${{ steps.context.outputs.base_ref }}
+
+      - name: Post reply
+        if: always()
+        uses: actions/github-script@v8
+        env:
+          CURSOR_OUTPUT_FILE: cursor-output.txt
+          CURSOR_STATUS: ${{ steps.cursor.outcome }}
+          HAS_CHANGES: ${{ steps.diff.outputs.has_changes || 'false' }}
+          PUSHED_TO_PR_BRANCH: ${{ steps.push_pr.outcome == 'success' && 'true' || 'false' }}
+          PUSH_BRANCH_NAME: ${{ steps.push_pr.outputs.branch_name }}
+          CREATED_PR_URL: ${{ steps.create_pr.outputs.pr_url }}
+          CREATED_BRANCH_NAME: ${{ steps.create_pr.outputs.branch_name }}
+        with:
+          script: |
+            const fs = require("fs");
+            const path = process.env.CURSOR_OUTPUT_FILE;
+            const cursorStatus = process.env.CURSOR_STATUS;
+            const hasChanges = process.env.HAS_CHANGES === "true";
+            const pushedToPrBranch = process.env.PUSHED_TO_PR_BRANCH === "true";
+            const pushBranchName = process.env.PUSH_BRANCH_NAME;
+            const createdPrUrl = process.env.CREATED_PR_URL;
+            const createdBranchName = process.env.CREATED_BRANCH_NAME;
+
+            let body = "";
+
+            if (cursorStatus !== "success") {
+              body += "Cursor Agent завершился с ошибкой.\n";
+            }
+
+            if (fs.existsSync(path)) {
+              const text = fs.readFileSync(path, "utf8").trim();
+              if (text) {
+                body += text.length > 50000 ? `${text.slice(0, 50000)}\n\n[output truncated]\n` : `${text}\n`;
+              }
+            } else if (!body) {
+              body = "Cursor Agent не вернул текстовый ответ.\n";
+            }
+
+            if (hasChanges) {
+              if (pushedToPrBranch) {
+                body += `\nИзменения закоммичены и отправлены в текущую ветку PR: \`${pushBranchName}\`.\n`;
+              } else if (createdPrUrl) {
+                body += `\nИзменения вынесены в отдельную ветку \`${createdBranchName}\` и оформлены в PR: ${createdPrUrl}\n`;
+              }
+            } else if (cursorStatus === "success") {
+              body += "\nИзменений в файлах не потребовалось.\n";
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body: body.trim(),
+            });

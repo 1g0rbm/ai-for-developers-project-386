@@ -51,6 +51,7 @@ out/
 .idea/
 .vscode/
 .cursor/
+.codex/
 *.swp
 *.swo
 *~
