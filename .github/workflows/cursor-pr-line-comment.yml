@@ -1,13 +1,11 @@
-name: cursor-agent
+name: cursor-pr-line-comment
 
 on:
-  issue_comment:
-    types: [created]
   pull_request_review_comment:
     types: [created]
 
 concurrency:
-  group: cursor-agent-${{ github.event.comment.id || github.run_id }}
+  group: cursor-pr-line-comment-${{ github.event.comment.id || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -32,80 +30,52 @@ jobs:
         uses: actions/github-script@v8
         with:
           script: |
-            const isIssueComment = context.eventName === "issue_comment";
-            const isReviewComment = context.eventName === "pull_request_review_comment";
             const truncate = (value, limit = 4000) => {
               if (!value) return "";
               return value.length > limit ? `${value.slice(0, limit)}\n...[truncated]` : value;
             };
 
-            let issueNumber = context.payload.issue?.number ?? null;
-            let issueTitle = context.payload.issue?.title ?? "";
-            let issueBody = context.payload.issue?.body ?? "";
-            let pr = null;
-            let threadParts = [];
-            let reviewThreadParts = [];
+            const pr = context.payload.pull_request;
+            const currentComment = context.payload.comment;
 
-            if (isReviewComment) {
-              pr = context.payload.pull_request;
-              issueNumber = pr.number;
-              issueTitle = pr.title;
-              issueBody = pr.body ?? "";
+            const reviewComments = await github.paginate(github.rest.pulls.listReviewComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
 
-              const currentComment = context.payload.comment;
-              const reviewComments = await github.paginate(github.rest.pulls.listReviewComments, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: pr.number,
-                per_page: 100,
-              });
+            const issueComments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              per_page: 100,
+            });
 
-              const rootId = currentComment.in_reply_to_id ?? currentComment.id;
-              const reviewThread = reviewComments
-                .filter((comment) => comment.id === rootId || comment.in_reply_to_id === rootId)
-                .slice(-20);
+            const rootId = currentComment.in_reply_to_id ?? currentComment.id;
+            const reviewThread = reviewComments
+              .filter((comment) => comment.id === rootId || comment.in_reply_to_id === rootId)
+              .slice(-20);
 
-              if (currentComment.diff_hunk) {
-                reviewThreadParts.push(`Diff-контекст:\n${truncate(currentComment.diff_hunk, 3000)}`);
-              }
-
-              reviewThreadParts = reviewThreadParts.concat(
-                reviewThread.map((comment) => `Review-комментарий @${comment.user.login}:\n${truncate(comment.body)}`),
-              );
+            const discussionParts = [`Заголовок PR: ${pr.title}`];
+            if (pr.body) {
+              discussionParts.push(`Описание PR:\n${truncate(pr.body)}`);
             }
 
-            if (isIssueComment && context.payload.issue?.pull_request) {
-              const pull = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.issue.number,
-              });
-              pr = pull.data;
-              issueTitle = pr.title;
-              issueBody = pr.body ?? "";
+            discussionParts.push(
+              ...issueComments.slice(-20).map((comment) => `Комментарий @${comment.user.login}:\n${truncate(comment.body)}`),
+            );
+
+            const reviewThreadParts = [];
+            if (currentComment.diff_hunk) {
+              reviewThreadParts.push(`Diff-контекст:\n${truncate(currentComment.diff_hunk, 3000)}`);
             }
 
-            if (issueNumber) {
-              const comments = await github.paginate(github.rest.issues.listComments, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                per_page: 100,
-              });
+            reviewThreadParts.push(
+              ...reviewThread.map((comment) => `Review-комментарий @${comment.user.login}:\n${truncate(comment.body)}`),
+            );
 
-              threadParts.push(`Заголовок: ${issueTitle}`);
-              if (issueBody) {
-                threadParts.push(`Описание issue/PR:\n${truncate(issueBody)}`);
-              }
-
-              const recentComments = comments.slice(-20).map((comment) => {
-                return `Комментарий @${comment.user.login}:\n${truncate(comment.body)}`;
-              });
-
-              threadParts = threadParts.concat(recentComments);
-            }
-
-            const commentBody = context.payload.comment.body;
+            const commentBody = currentComment.body;
             const withoutTrigger = commentBody
               .replace(/(?:^|\s)\/(?:cursor|oc|opencode)\b/g, " ")
               .trim();
@@ -115,43 +85,31 @@ jobs:
             const mode = normalizedMode === "fix" ? "fix" : "explain";
             const commandText = restWords.join(" ").trim();
 
-            const isPullRequest = Boolean(pr);
             const currentRepo = `${context.repo.owner}/${context.repo.repo}`;
-            const headRepo = isPullRequest ? pr.head.repo.full_name : `${context.repo.owner}/${context.repo.repo}`;
-            const headRef = isPullRequest ? pr.head.ref : context.payload.repository.default_branch;
-            const headSha = isPullRequest ? pr.head.sha : context.sha;
-            const baseRef = isPullRequest ? pr.base.ref : context.payload.repository.default_branch;
+            const headRepo = pr.head.repo.full_name;
             const sameRepo = headRepo === currentRepo;
-            const canPushToHead = isPullRequest && sameRepo && mode === "fix";
-            const checkoutRepository = isPullRequest ? headRepo : currentRepo;
-            const checkoutRef = isPullRequest ? headSha : baseRef;
+            const canPushToHead = sameRepo && mode === "fix";
 
             core.setOutput("mode", mode);
-            core.setOutput("is_pull_request", String(isPullRequest));
-            core.setOutput("issue_number", String(issueNumber ?? ""));
-            core.setOutput("issue_title", issueTitle);
-            core.setOutput("pr_number", isPullRequest ? String(pr.number) : "");
-            core.setOutput("pr_title", isPullRequest ? pr.title : "");
-            core.setOutput("head_repo", headRepo);
-            core.setOutput("head_ref", headRef);
-            core.setOutput("head_sha", headSha);
-            core.setOutput("base_ref", baseRef);
-            core.setOutput("same_repo", String(sameRepo));
-            core.setOutput("can_push_to_head", String(canPushToHead));
-            core.setOutput("checkout_repository", checkoutRepository);
-            core.setOutput("checkout_ref", checkoutRef);
+            core.setOutput("pr_number", String(pr.number));
+            core.setOutput("pr_title", pr.title);
             core.setOutput("comment_body", commentBody);
             core.setOutput("command_text", commandText);
-            core.setOutput("comment_author", context.payload.comment.user.login);
-            core.setOutput("comment_url", context.payload.comment.html_url);
-            core.setOutput("review_path", context.payload.comment.path || "");
-            core.setOutput("review_line", context.payload.comment.line ? String(context.payload.comment.line) : "");
-            core.setOutput("review_start_line", context.payload.comment.start_line ? String(context.payload.comment.start_line) : "");
-            core.setOutput("review_original_line", context.payload.comment.original_line ? String(context.payload.comment.original_line) : "");
-            core.setOutput("review_original_start_line", context.payload.comment.original_start_line ? String(context.payload.comment.original_start_line) : "");
-            core.setOutput("review_side", context.payload.comment.side || "");
-            core.setOutput("thread_context", threadParts.join("\n\n---\n\n"));
+            core.setOutput("comment_author", currentComment.user.login);
+            core.setOutput("comment_url", currentComment.html_url);
+            core.setOutput("review_path", currentComment.path || "");
+            core.setOutput("review_line", currentComment.line ? String(currentComment.line) : "");
+            core.setOutput("review_start_line", currentComment.start_line ? String(currentComment.start_line) : "");
+            core.setOutput("review_original_line", currentComment.original_line ? String(currentComment.original_line) : "");
+            core.setOutput("review_original_start_line", currentComment.original_start_line ? String(currentComment.original_start_line) : "");
+            core.setOutput("review_side", currentComment.side || "");
             core.setOutput("review_thread_context", reviewThreadParts.join("\n\n---\n\n"));
+            core.setOutput("discussion_context", discussionParts.join("\n\n---\n\n"));
+            core.setOutput("head_ref", pr.head.ref);
+            core.setOutput("head_sha", pr.head.sha);
+            core.setOutput("base_ref", pr.base.ref);
+            core.setOutput("head_repo", headRepo);
+            core.setOutput("can_push_to_head", String(canPushToHead));
 
       - name: Checkout repository
         if: steps.context.outputs.mode == 'fix'
@@ -159,8 +117,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          repository: ${{ steps.context.outputs.checkout_repository }}
-          ref: ${{ steps.context.outputs.checkout_ref }}
+          repository: ${{ steps.context.outputs.head_repo }}
+          ref: ${{ steps.context.outputs.head_sha }}
 
       - name: Install Cursor Agent
         run: curl https://cursor.com/install -fsS | bash
@@ -174,12 +132,8 @@ jobs:
           COMMAND_TEXT: ${{ steps.context.outputs.command_text }}
           COMMENT_AUTHOR: ${{ steps.context.outputs.comment_author }}
           COMMENT_URL: ${{ steps.context.outputs.comment_url }}
-          THREAD_CONTEXT: ${{ steps.context.outputs.thread_context }}
-          ISSUE_NUMBER: ${{ steps.context.outputs.issue_number }}
-          ISSUE_TITLE: ${{ steps.context.outputs.issue_title }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           PR_TITLE: ${{ steps.context.outputs.pr_title }}
-          IS_PULL_REQUEST: ${{ steps.context.outputs.is_pull_request }}
           REVIEW_PATH: ${{ steps.context.outputs.review_path }}
           REVIEW_LINE: ${{ steps.context.outputs.review_line }}
           REVIEW_START_LINE: ${{ steps.context.outputs.review_start_line }}
@@ -187,8 +141,8 @@ jobs:
           REVIEW_ORIGINAL_START_LINE: ${{ steps.context.outputs.review_original_start_line }}
           REVIEW_SIDE: ${{ steps.context.outputs.review_side }}
           REVIEW_THREAD_CONTEXT: ${{ steps.context.outputs.review_thread_context }}
+          DISCUSSION_CONTEXT: ${{ steps.context.outputs.discussion_context }}
           REPOSITORY: ${{ github.repository }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.local/bin:$PATH"
@@ -196,15 +150,11 @@ jobs:
           prompt_file="$(mktemp)"
           cat >"$prompt_file" <<EOF
           Ты работаешь внутри GitHub Actions в репозитории $REPOSITORY.
-          Режим: explain.
-          Событие: $EVENT_NAME.
+          Режим: line comment explain.
           Автор комментария: @$COMMENT_AUTHOR.
           Ссылка на комментарий: $COMMENT_URL.
 
-          Контекст:
-          - is_pull_request: $IS_PULL_REQUEST
-          - issue_number: $ISSUE_NUMBER
-          - issue_title: $ISSUE_TITLE
+          Контекст позиции в diff:
           - pr_number: $PR_NUMBER
           - pr_title: $PR_TITLE
           - review_path: $REVIEW_PATH
@@ -214,11 +164,11 @@ jobs:
           - review_original_start_line: $REVIEW_ORIGINAL_START_LINE
           - review_side: $REVIEW_SIDE
 
-          Текущий thread обсуждения:
-          $THREAD_CONTEXT
-
-          Контекст review-комментария:
+          Контекст review-thread:
           $REVIEW_THREAD_CONTEXT
+
+          Общая сводка PR и обсуждения:
+          $DISCUSSION_CONTEXT
 
           Исходный комментарий пользователя:
           $COMMENT_BODY
@@ -226,22 +176,22 @@ jobs:
           Дополнительная инструкция после команды explain:
           $COMMAND_TEXT
 
-          Прочитай только текущий thread: заголовок, описание и комментарии.
-          Не анализируй весь репозиторий и не делай обзор проекта.
-          Не читай код и не предлагай изменения в файлах, если этого нет прямо в самом thread.
+          Это workflow для комментария к конкретной строке diff.
+          Сначала анализируй место комментария, diff-контекст и review-thread.
+          Только потом используй общую сводку PR, если это действительно нужно.
+          Не проси пользователя повторно указывать файл или строку.
+          Не превращай локальное замечание в общий review всего PR.
 
-          Дай краткий разбор:
-          - о чем issue или обсуждение;
-          - какие компоненты затронуты, но только если они явно упомянуты в thread;
-          - возможные причины, исходя только из thread;
-          - связанный контекст, если в thread упомянуты другие issue или PR.
+          Дай краткий и прикладной ответ:
+          - что именно замечено в этом месте;
+          - что можно сделать;
+          - какие ограничения или сомнения есть.
 
           Правила:
           - отвечай по-русски;
           - будь конкретным и кратким;
-          - если данных недостаточно, прямо напиши об этом;
-          - не подменяй ответ общим описанием репозитория;
-          - не проси пользователя запускать локальные команды.
+          - не проси пользователя запускать локальные команды;
+          - не спрашивай подтверждений, ты работаешь в CI.
           EOF
 
           cursor-agent --force --print --output-format text "$(cat "$prompt_file")" | tee cursor-output.txt
@@ -255,12 +205,8 @@ jobs:
           COMMAND_TEXT: ${{ steps.context.outputs.command_text }}
           COMMENT_AUTHOR: ${{ steps.context.outputs.comment_author }}
           COMMENT_URL: ${{ steps.context.outputs.comment_url }}
-          THREAD_CONTEXT: ${{ steps.context.outputs.thread_context }}
-          ISSUE_NUMBER: ${{ steps.context.outputs.issue_number }}
-          ISSUE_TITLE: ${{ steps.context.outputs.issue_title }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           PR_TITLE: ${{ steps.context.outputs.pr_title }}
-          IS_PULL_REQUEST: ${{ steps.context.outputs.is_pull_request }}
           REVIEW_PATH: ${{ steps.context.outputs.review_path }}
           REVIEW_LINE: ${{ steps.context.outputs.review_line }}
           REVIEW_START_LINE: ${{ steps.context.outputs.review_start_line }}
@@ -268,8 +214,8 @@ jobs:
           REVIEW_ORIGINAL_START_LINE: ${{ steps.context.outputs.review_original_start_line }}
           REVIEW_SIDE: ${{ steps.context.outputs.review_side }}
           REVIEW_THREAD_CONTEXT: ${{ steps.context.outputs.review_thread_context }}
+          DISCUSSION_CONTEXT: ${{ steps.context.outputs.discussion_context }}
           REPOSITORY: ${{ github.repository }}
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
           export PATH="$HOME/.local/bin:$PATH"
@@ -277,15 +223,11 @@ jobs:
           prompt_file="$(mktemp)"
           cat >"$prompt_file" <<EOF
           Ты работаешь внутри GitHub Actions в репозитории $REPOSITORY.
-          Режим: fix.
-          Событие: $EVENT_NAME.
+          Режим: line comment fix.
           Автор комментария: @$COMMENT_AUTHOR.
           Ссылка на комментарий: $COMMENT_URL.
 
-          Контекст:
-          - is_pull_request: $IS_PULL_REQUEST
-          - issue_number: $ISSUE_NUMBER
-          - issue_title: $ISSUE_TITLE
+          Контекст позиции в diff:
           - pr_number: $PR_NUMBER
           - pr_title: $PR_TITLE
           - review_path: $REVIEW_PATH
@@ -295,11 +237,11 @@ jobs:
           - review_original_start_line: $REVIEW_ORIGINAL_START_LINE
           - review_side: $REVIEW_SIDE
 
-          Текущий thread обсуждения:
-          $THREAD_CONTEXT
-
-          Контекст review-комментария:
+          Контекст review-thread:
           $REVIEW_THREAD_CONTEXT
+
+          Общая сводка PR и обсуждения:
+          $DISCUSSION_CONTEXT
 
           Исходный комментарий пользователя:
           $COMMENT_BODY
@@ -307,10 +249,11 @@ jobs:
           Дополнительная инструкция после команды fix:
           $COMMAND_TEXT
 
-          Сначала прочитай текущий thread целиком.
-          Затем проанализируй код репозитория только в той степени, которая нужна для исправления задачи.
-          Если задача понятна и исправление реалистично, внеси изменения в рабочую директорию.
-          После изменений оставь файлы сохраненными на диске.
+          Это workflow для комментария к конкретной строке diff.
+          Сначала анализируй место комментария, diff-контекст и review-thread.
+          Затем исследуй код только в той степени, которая нужна для исправления замечания.
+          Не проси пользователя повторно указывать файл или строку.
+          Если задача понятна и реалистична, внеси изменения в рабочую директорию и сохрани файлы.
 
           В ответе:
           - кратко объясни, что было сделано;
@@ -319,7 +262,6 @@ jobs:
 
           Правила:
           - отвечай по-русски;
-          - не делай общий обзор репозитория без необходимости;
           - не проси пользователя запускать локальные команды;
           - не спрашивай подтверждений, ты работаешь в CI.
           EOF
@@ -352,7 +294,7 @@ jobs:
         run: |
           set -euo pipefail
           git add -A
-          git commit -m "cursor-agent: apply requested changes"
+          git commit -m "cursor-agent: apply line-comment changes"
           git push origin "HEAD:${TARGET_BRANCH}"
           echo "branch_name=${TARGET_BRANCH}" >> "$GITHUB_OUTPUT"
         env:
@@ -363,19 +305,13 @@ jobs:
         if: steps.context.outputs.mode == 'fix' && steps.diff.outputs.has_changes == 'true' && steps.context.outputs.can_push_to_head != 'true'
         run: |
           set -euo pipefail
-          if [ -n "${PR_NUMBER}" ]; then
-            branch="cursor-agent/pr-${PR_NUMBER}-${RUN_ID}-${RUN_ATTEMPT}"
-            title="Cursor Agent changes for PR #${PR_NUMBER}"
-            body=$'Автоматические изменения от Cursor Agent.\n\nИсходный контекст: PR #'${PR_NUMBER}$'.'
-          else
-            branch="cursor-agent/issue-${ISSUE_NUMBER}-${RUN_ID}-${RUN_ATTEMPT}"
-            title="Cursor Agent changes for issue #${ISSUE_NUMBER}"
-            body=$'Автоматические изменения от Cursor Agent.\n\nCloses #'${ISSUE_NUMBER}$'.'
-          fi
+          branch="cursor-agent/pr-${PR_NUMBER}-${RUN_ID}-${RUN_ATTEMPT}"
+          title="Cursor Agent changes for PR #${PR_NUMBER}"
+          body=$'Автоматические изменения от Cursor Agent по line-comment.\n\nИсходный контекст: PR #'${PR_NUMBER}$'.'
 
           git checkout -b "$branch"
           git add -A
-          git commit -m "cursor-agent: apply requested changes"
+          git commit -m "cursor-agent: apply line-comment changes"
           git push origin "$branch"
 
           pr_url="$(gh pr create \
@@ -391,7 +327,6 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
-          ISSUE_NUMBER: ${{ steps.context.outputs.issue_number }}
           BASE_REF: ${{ steps.context.outputs.base_ref }}
 
       - name: Post reply
@@ -399,7 +334,7 @@ jobs:
         uses: actions/github-script@v8
         env:
           MODE: ${{ steps.context.outputs.mode }}
-          ISSUE_NUMBER: ${{ steps.context.outputs.issue_number }}
+          ISSUE_NUMBER: ${{ steps.context.outputs.pr_number }}
           CURSOR_OUTPUT_FILE: cursor-output.txt
           CURSOR_EXPLAIN_STATUS: ${{ steps.cursor_explain.outcome }}
           CURSOR_FIX_STATUS: ${{ steps.cursor_fix.outcome }}

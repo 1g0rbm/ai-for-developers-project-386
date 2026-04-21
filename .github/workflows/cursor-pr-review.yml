@@ -1,0 +1,145 @@
+name: cursor-pr-review
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+concurrency:
+  group: cursor-pr-review-${{ github.event.pull_request.id }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.user.type != 'Bot' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Collect PR context
+        uses: actions/github-script@v8
+        env:
+          OUTPUT_FILE: pr-review-context.txt
+        with:
+          script: |
+            const fs = require("fs");
+            const path = process.env.OUTPUT_FILE;
+            const pr = context.payload.pull_request;
+            const truncate = (value, limit = 2500) => {
+              if (!value) return "";
+              return value.length > limit ? `${value.slice(0, limit)}\n...[truncated]` : value;
+            };
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+
+            const visibleFiles = files.slice(0, 30);
+            const fileSections = visibleFiles.map((file) => {
+              return [
+                `Файл: ${file.filename}`,
+                `Статус: ${file.status}`,
+                `Изменения: +${file.additions} / -${file.deletions}`,
+                file.patch ? `Patch:\n${truncate(file.patch)}` : "Patch: недоступен",
+              ].join("\n");
+            });
+
+            const lines = [
+              `PR #${pr.number}: ${pr.title}`,
+              `Автор: @${pr.user.login}`,
+              `Base: ${pr.base.ref}`,
+              `Head: ${pr.head.ref}`,
+              "",
+              "Описание PR:",
+              truncate(pr.body || "Нет описания", 4000),
+              "",
+              `Всего изменённых файлов: ${files.length}`,
+              files.length > visibleFiles.length
+                ? `В prompt включены первые ${visibleFiles.length} файлов для компактности.`
+                : "В prompt включены все изменённые файлы.",
+              "",
+              fileSections.join("\n\n---\n\n"),
+            ];
+
+            fs.writeFileSync(path, lines.join("\n"), "utf8");
+
+      - name: Install Cursor Agent
+        run: curl https://cursor.com/install -fsS | bash
+
+      - name: Run Cursor PR review
+        id: cursor_review
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+
+          prompt_file="$(mktemp)"
+          cat >"$prompt_file" <<EOF
+          Ты работаешь внутри GitHub Actions в репозитории $REPOSITORY.
+          Режим: automatic pull request review.
+
+          Pull request:
+          - номер: $PR_NUMBER
+          - заголовок: $PR_TITLE
+          - ссылка: $PR_URL
+
+          Контекст PR:
+          $(cat pr-review-context.txt)
+
+          Это автоматический предварительный review.
+          Не изменяй файлы, не делай коммиты, не создавай ветки и не открывай PR.
+          Сфокусируйся только на техническом ревью:
+          - типичные баги;
+          - null-safety и проверки ошибок;
+          - рискованные места в логике;
+          - пробелы в тестах;
+          - очевидные проблемы в стиле и поддерживаемости.
+
+          Если существенных замечаний нет, ответь ровно:
+          NO_REVIEW
+
+          Иначе дай краткий review-комментарий на русском:
+          - сначала findings по степени важности;
+          - затем короткий итог;
+          - не делай общий обзор репозитория;
+          - не проси запускать локальные команды.
+          EOF
+
+          cursor-agent --force --print --output-format text "$(cat "$prompt_file")" | tee cursor-review-output.txt
+
+      - name: Publish review
+        if: steps.cursor_review.outcome == 'success'
+        uses: actions/github-script@v8
+        env:
+          CURSOR_OUTPUT_FILE: cursor-review-output.txt
+        with:
+          script: |
+            const fs = require("fs");
+            const path = process.env.CURSOR_OUTPUT_FILE;
+            if (!fs.existsSync(path)) return;
+
+            const body = fs.readFileSync(path, "utf8").trim();
+            if (!body || body === "NO_REVIEW") return;
+
+            await github.rest.pulls.createReview({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              event: "COMMENT",
+              body: body.length > 60000 ? `${body.slice(0, 60000)}\n\n[output truncated]` : body,
+            });
